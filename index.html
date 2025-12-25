@@ -864,6 +864,82 @@ function getNextBlankDrawingDateFrom(historyDateSet, fromDate) {
   }
   return getNextDrawingDate(fromDate);
 }
+
+function computeNextBlankDrawDateISO(fromDate = new Date()) {
+  // Find the next scheduled draw date that isn't already in historicalData.
+  const historySet = new Set(
+    Array.isArray(window.historicalData)
+      ? window.historicalData
+          .map(r => r?.date)
+          .filter(Boolean)
+      : []
+  );
+
+  // Base the search off the most recent historical date when possible,
+  // otherwise fall back to the provided date/today.
+  let base = fromDate instanceof Date && !isNaN(fromDate) ? fromDate : new Date();
+  if (historySet.size > 0) {
+    const latest = Array.from(historySet).sort().pop();
+    if (latest) base = new Date(latest);
+  }
+  const nextBlank = getNextBlankDrawingDateFrom(historySet, base);
+  return nextBlank ? nextBlank.toISOString().split('T')[0] : '';
+}
+
+function updateWinningDateSelectorToNextBlank() {
+  const dateInput = document.getElementById('drawDate');
+  if (!dateInput) return;
+
+  const nextBlank = computeNextBlankDrawDateISO();
+  if (nextBlank) {
+    const label = formatDate(nextBlank);
+    let opt = Array.from(dateInput.options).find(o => o.value === nextBlank);
+    if (!opt) {
+      opt = new Option(label, nextBlank);
+      dateInput.appendChild(opt);
+    } else {
+      opt.textContent = label;
+    }
+    const idx = Array.from(dateInput.options).findIndex(o => o.value === nextBlank);
+    dateInput.selectedIndex = idx >= 0 ? idx : 0;
+    dateInput.value = nextBlank;
+  } else if (dateInput.options.length > 0) {
+    dateInput.selectedIndex = 0;
+    dateInput.value = dateInput.options[0].value;
+  } else {
+    const meBtn = document.getElementById('manualEntryBtn');
+    if (meBtn) {
+      meBtn.disabled = true;
+      meBtn.setAttribute('disabled', '');
+      meBtn.style.opacity = '0.5';
+    }
+  }
+}
+
+function updateLoadButtonWithLastDate(dateStr) {
+  if (!dateStr) return;
+  const loadDataBtn = document.getElementById('loadDataBtn');
+  const lastDrawDateText = document.getElementById('lastDrawDateText');
+  const formatted = new Date(dateStr).toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric'
+  });
+  if (loadDataBtn) {
+    loadDataBtn.innerHTML = `Load Historical Data<br><small style="font-size:12px;font-weight:bold;color:green;">Last Historical Draw Date: ${formatted}</small>`;
+  }
+  if (lastDrawDateText) {
+    lastDrawDateText.textContent = `Last Historical Draw Date: ${formatted}`;
+  }
+}
+
+function updateLoadButtonWithLastDrawDate() {
+  if (!Array.isArray(window.historicalData) || window.historicalData.length === 0) return;
+  const sorted = window.historicalData.slice().sort((a, b) => new Date(b.date) - new Date(a.date));
+  const last = sorted[0];
+  if (last?.date) updateLoadButtonWithLastDate(last.date);
+}
+
 function isDrawingDay(date) {
   const day = date.getDay();
   return day === 1 || day === 3 || day === 6;
@@ -3235,22 +3311,6 @@ async function submitManualEntry() {
         return;
     }
 }
-
-        if (dateInput && dateInput.options.length > 0) {
-            dateInput.selectedIndex = 0;
-            dateInput.value = dateInput.options[0].value;
-        } else {
-            // No more blank dates available through next scheduled draw
-            hideManualEntryForm();
-            const meBtn = document.getElementById('manualEntryBtn');
-            if (meBtn) { meBtn.disabled = true; meBtn.setAttribute('disabled',''); meBtn.style.opacity = '0.5'; }
-        }
-    } catch (e) {
-        console.warn('Could not advance draw date selector:', e);
-    }
-}
-
-
 function triggerReloadUpdatedFile() {
     const reloadInput = document.createElement('input');
     reloadInput.type = 'file';
