@@ -827,7 +827,7 @@ button:disabled:hover {
         <!-- 5 regular balls and 1 Powerball textboxes will be inserted here by JavaScript -->
     </div>
     <div style="text-align: center; margin-top: 20px;">
-        <button onclick="submitManualEntry()" style="margin-right: 10px;">Submit</button>
+        <button id="submitNumbersBtn" onclick="submitManualEntry()" style="margin-right: 10px;">Submit</button>
         <button onclick="hideManualEntryForm()">Cancel</button>
     </div>
 </div>
@@ -1591,7 +1591,11 @@ function checkAndNotifyForDrawing() {
     }
 }
 function formatDate(date) {
-  return new Date(date).toLocaleDateString('en-US', {
+  // Treat YYYY-MM-DD as a local date (midday) to avoid timezone weekday drift.
+  const d = (typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date))
+    ? new Date(date + 'T12:00:00')
+    : new Date(date);
+  return d.toLocaleDateString('en-US', {
     weekday: 'long',
     year: 'numeric',
     month: 'long',
@@ -1928,7 +1932,7 @@ document.addEventListener("DOMContentLoaded", async function () {
   const loadBtn = document.getElementById("loadDataBtn");
   const manualBtn = document.getElementById("manualEntryBtn");
   const forceEnableManualBtnIfReady = () => {
-    const ready = Array.isArray(window.historicalData) && window.historicalData.length > 0;
+    const ready = !!(window.__pbvNext && window.__pbvNext.historicalDataLoaded);
     if (!manualBtn) return;
     if (ready) {
       manualBtn.disabled = false;
@@ -2960,7 +2964,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         // Manual entry (recent winning numbers)
 // NOTE: Use actual parsed historical data readiness (not a separate flag) so the button becomes clickable immediately after a successful load.
-const histReady = Array.isArray(window.historicalData) && window.historicalData.length > 0;
+const histReady = !!(window.__pbvNext && window.__pbvNext.historicalDataLoaded);
 manualEntryBtn.disabled = !histReady;
 manualEntryBtn.style.opacity = histReady ? "1" : "0.5";
 manualEntryBtn.title = histReady ? "" : "Please load historical data first";
@@ -2979,6 +2983,85 @@ manualEntryBtn.title = histReady ? "" : "Please load historical data first";
 
 
 
+
+function rebuildManualEntryBallsOnly() {
+    const container = document.getElementById('numberEntry');
+    if (!container) return;
+    // Preserve any existing layout outside the ball inputs; only rebuild the ball inputs area.
+    container.innerHTML = '';
+
+    // Helper to style the ball (matches showManualEntryForm)
+    function styleBall(input, bg, textColor, borderColor, glowColor) {
+        input.style.width = '78px';
+        input.style.height = '78px';
+        input.style.borderRadius = '50%';
+        input.style.border = `3px solid ${borderColor}`;
+        input.style.background = bg;
+        input.style.color = textColor;
+        input.style.fontSize = '28px';
+        input.style.fontWeight = 'bold';
+        input.style.textAlign = 'center';
+        input.style.outline = 'none';
+        input.style.boxShadow = `0 0 15px ${glowColor}`;
+        input.style.margin = '10px';
+        input.style.transition = 'transform 0.2s';
+        // remove spinner buttons consistently (some browsers need this on rebuild)
+        input.classList.add('number-input');
+        input.addEventListener('focus', () => input.style.transform = 'scale(1.1)');
+        input.addEventListener('blur', () => input.style.transform = 'scale(1.0)');
+    }
+
+    // Add 5 regular ball inputs
+    for (let i = 0; i < 5; i++) {
+        const ballInput = document.createElement('input');
+        ballInput.type = 'number';
+        ballInput.min = 1;
+        ballInput.max = 69;
+        ballInput.className = 'number-input main-number-input';
+        ballInput.placeholder = '';
+        ballInput.value = '';
+        styleBall(ballInput, '#4facfe', '#ffffff', '#00f2fe', 'rgba(0, 242, 254, 0.5)');
+
+        // Prevent duplicate main numbers at entry time
+        ballInput.addEventListener('input', () => {
+            const v = parseInt(ballInput.value, 10);
+            if (Number.isNaN(v)) return;
+            if (v < 1 || v > 69) { ballInput.value = ''; return; }
+
+            const others = Array.from(container.querySelectorAll('.main-number-input')).filter(el => el !== ballInput);
+            const dup = others.some(el => parseInt(el.value, 10) === v);
+            if (dup) {
+                ballInput.value = '';
+                alert('Duplicate main number not allowed. Please enter a unique number (1–69).');
+            }
+        });
+
+        container.appendChild(ballInput);
+    }
+
+    // Add Powerball input (1–24, duplicates allowed vs mains)
+    const pbInput = document.createElement('input');
+    pbInput.type = 'number';
+    pbInput.min = 1;
+    pbInput.max = 24;
+    pbInput.id = 'powerballInput';
+    pbInput.className = 'number-input';
+    pbInput.placeholder = '';
+    pbInput.value = '';
+    styleBall(pbInput, '#ff7eb3', '#ffffff', '#ff65a3', 'rgba(255, 126, 179, 0.5)');
+
+    pbInput.addEventListener('input', () => {
+        const v = parseInt(pbInput.value, 10);
+        if (Number.isNaN(v)) return;
+        if (v < 1 || v > 24) {
+            pbInput.value = '';
+            alert('PowerBall must be between 1 and 24.');
+        }
+    });
+
+    container.appendChild(pbInput);
+}
+
 function showManualEntryForm() {
     const container = document.getElementById('numberEntry');
     container.innerHTML = '';
@@ -2993,11 +3076,12 @@ function showManualEntryForm() {
     const historyDateSet = new Set(window.historicalData.map(r => r.date));
 
     // Find last historical date (most recent)
-    const lastHistoricalDate = new Date(
-        window.historicalData
-            .slice()
-            .sort((a, b) => new Date(b.date) - new Date(a.date))[0].date
-    );
+// IMPORTANT: parse YYYY-MM-DD as a *local* date to avoid timezone shifting (which can change the weekday).
+const latestRec = window.historicalData
+    .slice()
+    .sort((a, b) => new Date(a.date + 'T12:00:00') - new Date(b.date + 'T12:00:00'))
+    .pop();
+const lastHistoricalDate = new Date((latestRec?.date || '') + 'T12:00:00');
 
     // Determine the next scheduled draw date after TODAY (so user can enter the next draw even if it's in the future)
     const today = new Date();
@@ -3080,7 +3164,8 @@ function showManualEntryForm() {
         ballInput.min = 1;
         ballInput.max = 69;
         ballInput.className = 'number-input main-number-input';
-        ballInput.placeholder = '0';
+        ballInput.placeholder = '';
+        ballInput.value = '';
         styleBall(ballInput, '#4facfe', '#ffffff', '#00f2fe', 'rgba(0, 242, 254, 0.5)');
         // Prevent duplicate main numbers at entry time
         ballInput.addEventListener('input', () => {
@@ -3096,7 +3181,7 @@ function showManualEntryForm() {
             for (const n of mains) { if (seen.has(n)) { dup = true; break; } seen.add(n); }
             if (dup) {
                 ballInput.value = '';
-                if (typeof showPopup === 'function') showPopup('⚠️ Duplicate main number not allowed. Please choose a different number.');
+                if (typeof showPopup === 'function') showSuccessPopup('⚠️ Duplicate main number not allowed. Please choose a different number.');
                 else alert('Duplicate main number not allowed. Please choose a different number.');
             }
         });
@@ -3115,13 +3200,14 @@ function showManualEntryForm() {
     powerballInput.style.width = '78px';
     powerballInput.style.height = '78px';
 
-    powerballInput.placeholder = 'PB';
+    powerballInput.placeholder = '';
+    powerballInput.value = '';
     powerballInput.addEventListener('input', () => {
         const v = parseInt(powerballInput.value, 10);
         if (isNaN(v)) return;
         if (v < 1 || v > 24) {
             powerballInput.value = '';
-            if (typeof showPopup === 'function') showPopup('PowerBall must be between 1 and 24.');
+            if (typeof showPopup === 'function') showSuccessPopup('PowerBall must be between 1 and 24.');
             else alert('PowerBall must be between 1 and 24.');
         }
     });
@@ -3158,7 +3244,6 @@ function hideManualEntryForm() {
     }
 }
 
-async 
 async function submitManualEntry() {
     const numberInputs = Array.from(document.querySelectorAll('.main-number-input'));
     const powerballInput = document.getElementById('powerballInput');
@@ -3187,7 +3272,7 @@ async function submitManualEntry() {
     for (const n of numbers) {
         if (n < 1 || n > 69) { alert('Main numbers must be between 1 and 69.'); return; }
     }
-    // Powerball range is 1–26
+    // Powerball range is 1–24
     if (powerball < 1 || powerball > 24) { alert('Powerball must be between 1 and 24.'); return; }
 
     // Uniqueness for main numbers
@@ -3224,6 +3309,7 @@ async function submitManualEntry() {
         submitBtn.textContent = 'Saving...';
     }
 
+    try {
     let saved = false;
 
     // Try true auto-save (File System Access API + read/write permission)
@@ -3241,7 +3327,9 @@ async function submitManualEntry() {
                 await writable.close();
                 saved = true;
                 updateAutoSaveLight(true);
-                showPopup(`✅ Saved automatically to ${window.__pbvNext.loadedFileName}`);
+                showSuccessPopup(`✅ Saved automatically to ${window.__pbvNext.loadedFileName}`);
+                // Clear balls immediately after save (non-blocking toast)
+                hardClearManualEntryBalls();
             } else {
                 updateAutoSaveLight(false);
             }
@@ -3254,8 +3342,14 @@ async function submitManualEntry() {
 
     // Fallback: download a new file (browser limitation)
     if (!saved) {
-        showPopup('⚠️ Auto-save not available. Downloading updated file instead.');
-        downloadTextFile(fileContent, window.__pbvNext?.loadedFileName || "Powerball_Numbers_History(updated).txt");
+        showSuccessPopup('⚠️ Auto-save not available. Downloading updated file instead.');
+        try {
+            downloadTextFile(window.__pbvNext?.loadedFileName || "Powerball_Numbers_History(updated).txt", fileContent);
+            saved = true;
+        } catch (e) {
+            console.warn('Download fallback failed:', e);
+            saved = false;
+        }
     }
 
     // Refresh UI from the updated in-memory data
@@ -3265,24 +3359,31 @@ async function submitManualEntry() {
     displayMostRecentDraw();
     updateGenerateButtonState();
 
-    if (submitBtn) {
-        submitBtn.disabled = false;
-        submitBtn.textContent = 'Submit Winning Numbers';
-    }
-
-    // Mark that we saved during this modal session (used by Cancel behavior)
-    window.__pbvNext = window.__pbvNext || {};
-    window.__pbvNext.manualEntrySaved = true;
-
     // Tell the user what happened, then (after they acknowledge) clear inputs and advance date
     if (saved) {
+        window.__pbvNext = window.__pbvNext || {};
+        hardClearManualEntryBalls();
+        window.__pbvNext.manualEntrySaved = true;
         await showAckPopup('✅ Winning numbers saved successfully.', { title: 'Saved', buttonText: 'OK' });
+        // Reset entry balls to blank immediately after successful save
+        try { rebuildManualEntryBallsOnly(); } catch(e){ console.warn('rebuildManualEntryBallsOnly failed', e); }
 
-        // Clear inputs
-        numberInputs.forEach(i => i.value = '');
-        if (powerballInput) powerballInput.value = '';
+        // Clear entry balls after user acknowledges success
+        clearManualEntryBalls();
 
-        // Advance to the next blank scheduled draw date (Mon/Wed/Sat) not in history
+
+        // Clear inputs (ensure UI clears even if inputs were re-rendered)
+        rebuildManualEntryAfterSave();
+        // Force-clear values after rebuild (guards against painted-value persistence)
+        requestAnimationFrame(() => {
+            try {
+                const modal = document.getElementById('manualEntryModal') || document;
+                modal.querySelectorAll('.main-number-input').forEach(i => { i.value = ''; i.dispatchEvent(new Event('input', {bubbles:true})); });
+                const pb = modal.querySelector('#powerballInput');
+                if (pb) { pb.value = ''; pb.dispatchEvent(new Event('input', {bubbles:true})); }
+            } catch (e) { console.warn('post-save force-clear failed', e); }
+        });
+// Advance to the next blank scheduled draw date (Mon/Wed/Sat) not in history
         try {
             const usedDate = dateInput.value;
 
@@ -3310,6 +3411,13 @@ async function submitManualEntry() {
         window.__pbvNext.manualEntrySaved = false;
         return;
     }
+    } finally {
+        if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Submit Winning Numbers';
+        }
+    }
+
 }
 function triggerReloadUpdatedFile() {
     const reloadInput = document.createElement('input');
@@ -3596,57 +3704,8 @@ window.exportToFile = function exportToFile() {
   showSuccessPopup('Saved updated history file.');
 };
 
-// Override manual-entry submit to NOT require a second file-picker
-window.submitManualEntry = function submitManualEntry() {
-  const numberInputs = Array.from(document.querySelectorAll('.main-number-input'));
-  const powerballInput = document.querySelector('.powerball-input');
-  const drawDateInput = document.getElementById('drawDate');
-
-  if (!Array.isArray(window.historicalData) || window.historicalData.length === 0) {
-    alert('Load your history file first using "Load Historical Data".');
-    return;
-  }
-
-  const numbers = numberInputs.map(i => parseInt(i.value, 10)).filter(n => !Number.isNaN(n));
-  const powerball = parseInt(powerballInput?.value, 10);
-  const rawDate = (drawDateInput?.value || '').trim();
-  const parsedDate = rawDate ? new Date(rawDate) : null;
-  const drawDate = parsedDate && !isNaN(parsedDate.getTime())
-    ? parsedDate.getFullYear() + '-' + String(parsedDate.getMonth() + 1).padStart(2,'0') + '-' + String(parsedDate.getDate()).padStart(2,'0')
-    : '';
-
-  // Validation (exactly 5 mains, unique, range, PB range)
-  if (numbers.length !== 5 ||
-      numbers.some(n => n < 1 || n > 69) ||
-      (new Set(numbers)).size !== 5 ||
-      Number.isNaN(powerball) || powerball < 1 || powerball > 24 ||
-      !drawDate) {
-    alert('Enter 5 unique main numbers (1–69), 1 Powerball (1–26), and a valid drawing date.');
-    return;
-  }
-
-  const normalized = [...numbers].sort((a,b)=>a-b);
-  const existingIdx = window.historicalData.findIndex(r => r.date === drawDate);
-  const record = { date: drawDate, numbers: normalized, special: powerball };
-
-  if (existingIdx >= 0) {
-    window.historicalData[existingIdx] = record;
-  } else {
-    window.historicalData.push(record);
-  }
-
-  // keep sorted by date
-  window.historicalData.sort((a,b)=> (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-
-  // Update UI table if present
-  try {
-    if (typeof updateDrawingHistoryTable === 'function') updateDrawingHistoryTable();
-  } catch (e) {}
-
-  persistToLocalStorage();
-  hideManualEntryForm();
-  showSuccessPopup(existingIdx>=0 ? 'Drawing updated. Use "Save to File".' : 'Drawing added. Use "Save to File".');
-};
+// Bind manual-entry submit to the primary async implementation
+window.submitManualEntry = submitManualEntry;
 
 // If user selects LSTM, ensure tfjs is ready before running heavy ops
 document.addEventListener('change', async (e) => {
@@ -3656,5 +3715,183 @@ document.addEventListener('change', async (e) => {
   }
 });
 /* ===== End Patch ===== */
+
+function styleManualBall(input, bgColor, textColor, borderColor, shadowColor) {
+    input.style.width = '78px';
+    input.style.height = '78px';
+    input.style.borderRadius = '50%';
+    input.style.border = `2px solid ${borderColor}`;
+    input.style.background = `radial-gradient(circle at top left, #ffffff, ${bgColor})`;
+    input.style.color = textColor;
+    input.style.fontSize = '20px';
+    input.style.fontWeight = 'bold';
+    input.style.textAlign = 'center';
+    input.style.boxShadow = `0 4px 10px ${shadowColor}`;
+    input.style.outline = 'none';
+    input.style.transition = 'transform 0.2s ease';
+    input.addEventListener('focus', () => input.style.transform = 'scale(1.1)');
+    input.addEventListener('blur', () => input.style.transform = 'scale(1.0)');
+}
+
+function buildManualEntryInputWrapper(modal) {
+    const inputWrapper = document.createElement('div');
+    inputWrapper.id = 'manualEntryInputWrapper';
+    inputWrapper.style.display = 'flex';
+    inputWrapper.style.gap = '15px';
+    inputWrapper.style.marginBottom = '20px';
+    inputWrapper.style.flexWrap = 'wrap';
+    inputWrapper.style.justifyContent = 'center';
+
+    // Add 5 regular ball inputs (unique required)
+    for (let i = 0; i < 5; i++) {
+        const ballInput = document.createElement('input');
+        ballInput.type = 'number';
+        ballInput.min = 1;
+        ballInput.max = 69;
+        ballInput.className = 'number-input main-number-input';
+        ballInput.placeholder = '';
+        styleManualBall(ballInput, '#4facfe', '#ffffff', '#00f2fe', 'rgba(0, 242, 254, 0.5)');
+
+        ballInput.addEventListener('input', () => {
+            const v = parseInt(ballInput.value, 10);
+            if (Number.isNaN(v)) return;
+            if (v < 1 || v > 69) { ballInput.value = ''; return; }
+
+            const mains = Array.from(modal.querySelectorAll('.main-number-input'))
+                .map(el => parseInt(el.value, 10))
+                .filter(n => !Number.isNaN(n));
+
+            const seen = new Set();
+            let dup = false;
+            for (const n of mains) { if (seen.has(n)) { dup = true; break; } seen.add(n); }
+            if (dup) {
+                ballInput.value = '';
+                // Use existing popup mechanism
+                if (typeof showSuccessPopup === 'function') showSuccessPopup('⚠️ Duplicate main number not allowed. Please choose a different number.');
+                else alert('Duplicate main number not allowed. Please choose a different number.');
+            }
+        });
+
+        inputWrapper.appendChild(ballInput);
+    }
+
+    // Add Powerball input (duplicates allowed, range 1-24)
+    const powerballInput = document.createElement('input');
+    powerballInput.type = 'number';
+    powerballInput.min = 1;
+    powerballInput.max = 24;
+    powerballInput.className = 'number-input powerball-input';
+    powerballInput.id = 'powerballInput';
+    powerballInput.placeholder = '';
+    styleManualBall(powerballInput, '#ff416c', '#ffffff', '#ff7c9e', '#ff416c');
+
+    powerballInput.addEventListener('input', () => {
+        const v = parseInt(powerballInput.value, 10);
+        if (Number.isNaN(v)) return;
+        if (v < 1 || v > 24) {
+            powerballInput.value = '';
+            if (typeof showSuccessPopup === 'function') showSuccessPopup('PowerBall must be between 1 and 24.');
+            else alert('PowerBall must be between 1 and 24.');
+        }
+    });
+
+    inputWrapper.appendChild(powerballInput);
+
+    // Auto-advance focus when 2 digits entered
+    const allInputs = Array.from(inputWrapper.querySelectorAll('input'));
+    allInputs.forEach((inp, idx) => {
+        inp.setAttribute('inputmode', 'numeric');
+        inp.addEventListener('input', () => {
+            const v = String(inp.value || '');
+            if (v.length >= 2 && idx < allInputs.length - 1) {
+                allInputs[idx + 1].focus();
+                allInputs[idx + 1].select?.();
+            }
+        });
+    });
+
+    return inputWrapper;
+}
+
+function rebuildManualEntryAfterSave() {
+    // Some browsers / DOM states keep painted values even after .value=''.
+    // Rebuild the ball inputs fresh (keeping the date selector and its current value/options).
+    try {
+        const modal = document.getElementById('manualEntryModal');
+        const container = document.getElementById('numberEntry');
+        if (!modal || !container) return;
+
+        // Remove existing wrapper if present
+        const existing = container.querySelector('#manualEntryInputWrapper');
+        if (existing) existing.remove();
+        // Also remove any stray inputs that might have been appended earlier (safety)
+        container.querySelectorAll('.main-number-input, #powerballInput').forEach(el => el.remove());
+
+        const wrapper = buildManualEntryInputWrapper(modal);
+        container.appendChild(wrapper);
+
+        // Focus first main ball
+        const first = wrapper.querySelector('.main-number-input');
+        if (first) { first.focus(); first.select?.(); }
+    } catch (e) {
+        console.warn('rebuildManualEntryAfterSave failed', e);
+        // Fallback: attempt simple clear
+        clearManualEntryBalls();
+    }
+}
+
+
+function hardClearManualEntryBalls() {
+    // Hard UI reset for the styled number "ball" inputs.
+    // Some browsers keep the last painted value for <input type="number"> until blur/reflow.
+    try {
+        const modal = document.getElementById('manualEntryModal') || document;
+        const inputs = Array.from(modal.querySelectorAll('input.number-input'));
+        inputs.forEach(inp => {
+            try { inp.blur(); } catch(e) {}
+            inp.value = '';
+            inp.defaultValue = '';
+            inp.setAttribute('value', '');
+            // also clear any dataset/state that might be used by CSS/JS
+            if (inp.dataset) {
+                delete inp.dataset.value;
+                delete inp.dataset.filled;
+            }
+        });
+        // Force a repaint/reflow, then clear again (guards against painted value persistence)
+        void (modal.offsetHeight);
+        inputs.forEach(inp => {
+            inp.value = '';
+            inp.defaultValue = '';
+            inp.setAttribute('value', '');
+        });
+
+        // Focus first main ball
+        const first = modal.querySelector('.main-number-input');
+        if (first) { first.focus(); first.select?.(); }
+    } catch (e) {
+        console.warn('hardClearManualEntryBalls failed', e);
+    }
+}
+
+function clearManualEntryBalls() {
+    // Simple clear fallback (kept for safety)
+    try {
+        const modal = document.getElementById('manualEntryModal') || document;
+        modal.querySelectorAll('.main-number-input').forEach(i => {
+            i.value = '';
+            i.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        const pb = modal.querySelector('#powerballInput') || document.getElementById('powerballInput');
+        if (pb) {
+            pb.value = '';
+            pb.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        const first = modal.querySelector('.main-number-input');
+        if (first) { first.focus(); first.select?.(); }
+    } catch (e) {
+        console.warn('clearManualEntryBalls failed', e);
+    }
+}
 </script>
 </body></html>
